@@ -17,7 +17,7 @@ FROM は、Tupleを入力先から読み込みます。
 * schema_name には、Tuple名もしくはView名を指定します。
 * schema_alias には、クエリ内で使用するTupleもしくはViewの別名を指定します。
 * spout_processor には、読み込みに使用するプロセッサを指定します。
- 
+
 > Example:
     FROM userAction1 AS ua1, userAction2 AS ua2, view1 AS v1 USING kafka_spout()
 
@@ -87,10 +87,10 @@ INTO を使って出力したストリームは、FROM で読み込みます。
 JOINは、外部データをフィールドとしてTupleに結合します。
 
     JOIN join_name ON join_condition TO join_fields USING fetch_processor
-    
+
     join_condition:
     join_name.key_field = field [AND join_name.key_field = field AND join_name.key_field <> 0]
-    
+
     join_fields:
     join_name.join_field AS field_alias, ...
 
@@ -106,6 +106,25 @@ JOINは、外部データをフィールドとしてTupleに結合します。
     JOIN j1 ON j1.code1 = field1 AND j1.code2 = field2 AND j1.del = 0
       TO j1.name AS field10, j1.type AS field11
       USING mongo_fetch('db1', 'col1')
+
+#### EXPIRE
+
+```
+JOIN join_name ON join_condition TO join_fields EXPIRE expire_period
+USING fetch_processor
+```
+
+TO 〜 の 後ろに、「EXPIRE キャッシュの有効期限」で指定します。
+EXPIRE 〜 を省略した場合は、キャッシュは実行されません。
+
+指定した時間の間、fetchした内容をキャッシュします。キャッシュしている間に実行されたJOINは、キャッシュから結合フィールドを取得します。
+指定した時間が過ぎると、ふたたびFetchProcessorを実行してキャッシュを更新します。
+
+キャッシュは結合キーごとに保存されます。
+
+> Example:
+> JOIN books ON books.title = ccc AND books.author = ddd TO books.id AS book_id, books.price AS price EXPIRE 10min
+> USING web_fetch('http://localhost:3000/solr/select?q=${query}', [' = ',':', ' AND ', '+AND+'], 'response.docs[0]')
 
 ---
 
@@ -314,7 +333,7 @@ Tupleに状態フィールドを追加します。STATE TO clause を省略し�
 >
 > Example:
     55MIN
-  
+
 * 時間で指定
     number(HOURS|H)
 >
@@ -385,6 +404,89 @@ field1はそのまま、field6.member1をfield10フィールドへ、field7&#91;
 
 ---
 
+### SLIDE
+
+集計関数によるスライド集計できます。
+
+```
+SLIDE LENGTH [period BY time_field| count] 集計関数
+```
+
+#### 時間でスライド
+
+```
+SLIDE LENGTH 10sec BY _time sum(bbb) AS s, count() AS c
+```
+
+LENGTH スライド時間 BY 起点となるフィールド名 集計関数
+といった書式で指定します。
+
+* 起点となるフィールド名には、Timestamp型のフィールドを指定します。
+  _timeフィールドも指定できます。（スキーマに_timeフィールドを指定していた場合）
+* 集計関数は複数指定できます。現状では、sum(), avg(), count()の３つの集計関数が使用できます。
+
+#### 件数でスライド
+
+```
+SLIDE LENGTH 100 sum(bbb) AS s, count() AS c
+```
+
+LENGTHにスライドするTupleの数を指定します。
+
+SLIDE句はSlideOperatorを生成して処理されます。
+スライドに使用する領域は現在メモリになっていますが、将来的に外部DBへの差し替えを可能にしたいと考えています。
+スライドはTupleの到着時にのみ実行されます。（スライドによる再計算も到着時のみ）
+
+SlideOperatorは、Tupleが到着する度にTupleをウィンドウ領域に貯めつつ、都度集計を行なっていきます。
+その際、ウィンドウ幅から除外されたTuple（※）を集計結果から減算します。
+（※）スライドして集計対象から外れたTuple
+
+ウィンドウ領域に保存するTupleは、集計に必要なフィールドのみを選択しています。
+
+---
+
+### SNAPSHOT
+
+指定された期間もしくは、時間、もしくは件数毎に集計を実施します。
+
+#### 期間毎に集計
+
+例えば、7分毎に集計結果を返すとします。
+
+```
+SNAPSHOT EVERY 7min sum(bbb) AS s, count() AS c
+SNAPSHOT EVERY "*/7 * * * *" sum(bbb) AS s, count() AS c
+```
+
+集計はTupleが送られてくる度に実行されますが、集計結果は７分に１回だけ次のOperatorに送られます。
+下段の例は、時間をcron形式で指定したものです。（注：ダブルクォートでくくる必要があります）
+７分の間に１度もTupleが送られてこなかった場合は、集計結果が生成されない為、Tupleは次のOperatorに送られません。
+指定できる時間は１分以上です。
+集計結果は７分毎にリセットされます。
+
+#### 指定した時間に集計
+
+例えば、毎日0時に日時の集計結果を返すとします。
+
+```
+SNAPSHOT EVERY "0 0 * * *" sum(bbb) AS s, count() AS c
+```
+
+基本はcronと同じ書式です。範囲指定、カンマ区切りによる複数指定が可能です。
+
+#### 定数毎に集計
+
+例えば、Tupleを10個毎に集計した結果を返すとします。
+
+```
+SNAPSHOT EVERY 10 sum(bbb) AS s, count() AS c
+```
+
+指定した回数分のTupleが届いたタイミングで、集計結果が次のOperatorに送られます。
+集計結果は10件毎にリセットされます。
+
+---
+
 ### GROUP
 
 BEGIN GROUP ... END GROUP で囲まれたクエリを、グループで実行します。
@@ -429,7 +531,7 @@ GROUPはネストできます。
       EACH ...  <- date ごとに実行される
       BEGIN GROUP BY area
         EACH ...  <- date + area ごとに実行される
-      END GROUP 
+      END GROUP
     END GROUP
     EACH ...  <- グループ化せずに実行
 
@@ -447,6 +549,62 @@ TO STREAM で、すべてのグループを解除します。
 
 
 END GROUP と TO STREAM は、グループ化を解除する必要がなければ省略可能です。
+
+---
+
+### LIMIT
+
+Tupleの流れを制限したい場合に使用します。
+
+```
+LIMIT FIRST|LAST EVERY condition
+
+condition:
+period | number
+```
+
+#### 時間による制限
+
+* 最初に届いたTupleのみを次のOperatorに送り、以降30分の間はTupleを送りません。
+
+```
+LIMIT FIRST EVERY 30min
+```
+
+* Tupleが最初に届いてから、30分の間に届いたTupleの最後の１件のみを次のOperatorに送ります。
+
+```
+LIMIT LAST EVERY 30min
+```
+
+* 時間の起点は、最初にTupleが届いた時になります。起点は30分経過後にリセットされます。
+* 30分経過したかどうかは、30分経過後に初めてTupleが届いた時点で判断されます。　　
+LASTを指定した場合で、30分間の最後にTupleが届いた時点から、次のTupleが届くまでに１週間かかった場合は、最後のTupleが送られるのは１週間後になります。
+
+#### 件数による制限
+
+* ５件のTuple中で、最初に届いたTupleを通します。
+
+```
+LIMIT FIRST EVERY 5
+```
+
+4. ５件のTuple中で、最後に届いたTupleを通します。
+
+```
+LIMIT LAST EVERY 5
+```
+
+ * いずれもカウンタは５件ごとにクリアされます。
+
+#### 補足
+
+LIMITを使うことによって、
+LIMIT FIRSTであれば、１度EMIT（通知）したTupleを一定時間EMITさせないように制限したり、
+LIMIT LASTであれば、最初にアクションし始めてから、４時間の間で一番最後に行ったアクションを抽出したりすることができると思います。
+
+LIMIT LASTの場合、Tupleの通過のトリガーが、時間経過後に初めてきたTupleになるので、通過までタイムラグが発生します。これを時間経過と同時に通過させる
+（時間をトリガーにする）ことも可能ですが、どちらがいいのか迷いました。。
 
 ---
 
@@ -506,4 +664,3 @@ ${ACCOUNT_ID} は、Topologyを起動したユーザのAccount IDに置き換え
 
 > Example:
     kafka_emit('topic_${TOPOLOGY_ID}')
-
