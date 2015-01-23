@@ -5,9 +5,10 @@ title: genn.ai
 
 ### genn.ai ドキュメント
 
-* [primer](tutorial_ja.html)
+* [CLI](cli_ja.html)
 * [DDL](ddl_ja.html)
 * [DML](dml_ja.html)
+* [チュートリアル](tutorial_ja.html)
 * [設定](config_ja.html)
 
 ### genn.ai ツールマニュアル
